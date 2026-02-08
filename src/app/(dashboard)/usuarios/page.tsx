@@ -1,4 +1,3 @@
-// src/app/(dashboard)/usuarios/page.tsx
 "use client";
 
 import { useState, useEffect } from "react";
@@ -11,7 +10,7 @@ import {
   deleteDoc,
   doc,
 } from "firebase/firestore";
-import { db, auth } from "@/lib/firebase"; // Importando auth para pegar o token
+import { db, auth } from "@/lib/firebase";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter } from "next/navigation";
 
@@ -50,6 +49,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { toast } from "sonner"; // Usando sonner para feedbacks mais elegantes
 
 // --- Tipos e Schema ---
 interface UserData {
@@ -70,20 +70,27 @@ export default function UsuariosPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [usuarios, setUsuarios] = useState<UserData[]>([]);
   
-  // Hook de autenticação
   const { userData, loading: authLoading } = useAuth();
   const router = useRouter();
 
+  // UID do Super Admin (Sabio dos 6 Caninos)
+  const superAdminUID = "kJ4iOKdHmbgr4mWms34rp24w9413";
+
   // --- 1. Guardião de Rota ---
-  // Se não for admin, nem carrega os dados
-  if (!authLoading && (!userData || userData.role !== 'admin')) {
-    // Opcional: router.push('/') para expulsar
-  }
+  useEffect(() => {
+    if (!authLoading) {
+      const isAuthorized = userData?.role === 'admin' || auth.currentUser?.uid === superAdminUID;
+      if (!isAuthorized) {
+        toast.error("Acesso negado. Redirecionando...");
+        router.push('/');
+      }
+    }
+  }, [userData, authLoading, router]);
 
   // --- 2. Carregar Usuários (Listener em Tempo Real) ---
   useEffect(() => {
-    // Só ativa o listener se for admin
-    if (!userData || userData.role !== 'admin') return;
+    const isAuthorized = userData?.role === 'admin' || auth.currentUser?.uid === superAdminUID;
+    if (!isAuthorized) return;
 
     const unsub = onSnapshot(collection(db, "usuarios"), (snapshot) => {
       const lista: UserData[] = [];
@@ -93,6 +100,7 @@ export default function UsuariosPage() {
       setUsuarios(lista);
     }, (error) => {
       console.error("Erro ao buscar usuários:", error);
+      toast.error("Erro ao carregar lista de usuários.");
     });
 
     return () => unsub();
@@ -108,23 +116,21 @@ export default function UsuariosPage() {
     },
   });
 
-  // --- 3. Função de Criar (Atualizada para Vercel API) ---
+  // --- 3. Função de Criar ---
   async function onSubmit(values: z.infer<typeof formSchema>) {
     try {
-      // Pegar o token do usuário atual para provar que somos Admin na API
       const token = await auth.currentUser?.getIdToken();
 
       if (!token) {
-        alert("Erro de autenticação. Tente fazer login novamente.");
+        toast.error("Erro de autenticação. Tente fazer login novamente.");
         return;
       }
 
-      // Chamada para a nova API Route do Next.js
       const response = await fetch('/api/admin/create-user', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}` // O segredo está aqui!
+          'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify(values),
       });
@@ -135,29 +141,23 @@ export default function UsuariosPage() {
         throw new Error(result.error || "Erro ao criar usuário");
       }
 
-      console.log("Sucesso:", result);
+      toast.success(`Usuário ${values.nome} criado com sucesso!`);
       form.reset();
       setIsModalOpen(false);
-      alert(`Usuário ${values.nome} criado com sucesso!`);
       
     } catch (error: any) {
       console.error("Erro:", error);
-      alert(error.message);
+      toast.error(error.message);
     }
   }
 
-  // Se estiver carregando ou sem permissão, mostra aviso
   if (authLoading) return <div className="p-8">Carregando permissões...</div>;
-  if (userData?.role !== 'admin') {
-    return (
-      <div className="flex h-screen w-full items-center justify-center text-red-500 font-bold">
-        Acesso Negado. Apenas administradores podem ver esta página.
-      </div>
-    );
-  }
+
+  const isAuthorized = userData?.role === 'admin' || auth.currentUser?.uid === superAdminUID;
+  if (!isAuthorized) return null;
 
   return (
-    <div>
+    <div className="p-6">
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-4xl font-bold">Gerenciar Usuários</h1>
         <Dialog open={isModalOpen} onOpenChange={setIsModalOpen}>
@@ -245,15 +245,14 @@ export default function UsuariosPage() {
         </Dialog>
       </div>
 
-      {/* Tabela de Usuários */}
-      <div className="rounded-md border">
+      <div className="rounded-md border bg-white">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>Nome</TableHead>
               <TableHead>E-mail</TableHead>
               <TableHead>Nível</TableHead>
-              <TableHead>Ações</TableHead>
+              <TableHead className="text-right">Ações</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -262,22 +261,23 @@ export default function UsuariosPage() {
                 <TableCell className="font-medium">{u.nome}</TableCell>
                 <TableCell>{u.email}</TableCell>
                 <TableCell>
-                  <span className={u.role === 'admin' ? "text-red-600 font-bold" : "text-blue-600"}>
+                  <span className={`px-2 py-1 rounded-full text-xs font-bold ${
+                    u.role === 'admin' ? "bg-red-100 text-red-700" : "bg-blue-100 text-blue-700"
+                  }`}>
                     {u.role.toUpperCase()}
                   </span>
                 </TableCell>
-                <TableCell>
+                <TableCell className="text-right">
                   <Button 
                     variant="destructive" 
                     size="sm" 
                     onClick={async () => {
-                      if (confirm(`Tem certeza que deseja excluir ${u.nome}?`)) {
+                      if (confirm(`Deseja excluir ${u.nome}? O acesso será removido apenas do banco.`)) {
                         try {
                           await deleteDoc(doc(db, "usuarios", u.id));
-                          // Nota: Para excluir do Authentication também, precisaria de outra rota API.
-                          // Por enquanto, excluímos apenas do banco para impedir listagem.
+                          toast.success("Usuário removido da listagem.");
                         } catch (e) {
-                          alert("Erro ao excluir usuário.");
+                          toast.error("Erro ao excluir usuário.");
                         }
                       }
                     }}
@@ -289,7 +289,7 @@ export default function UsuariosPage() {
             ))}
             {usuarios.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="text-center py-4">
+                <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
                   Nenhum usuário encontrado.
                 </TableCell>
               </TableRow>

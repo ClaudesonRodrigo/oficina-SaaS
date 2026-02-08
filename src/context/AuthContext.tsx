@@ -20,12 +20,12 @@ interface UserData {
   plan?: string;
 }
 
-// Interface do Contexto (Aqui estava faltando o logout!)
+// Interface do Contexto incluindo a função de logout
 interface AuthContextType {
-  user: User | null;      // O usuário técnico do Firebase Authentication
-  userData: UserData | null; // Os dados do nosso banco (nome, cargo, etc)
+  user: User | null;          // O usuário técnico do Firebase Authentication
+  userData: UserData | null;   // Os dados do nosso banco (nome, cargo, etc)
   loading: boolean;
-  logout: () => Promise<void>; // <--- ADICIONADO AQUI
+  logout: () => Promise<void>; 
 }
 
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
@@ -35,6 +35,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [userData, setUserData] = useState<UserData | null>(null);
   const [loading, setLoading] = useState(true);
   const router = useRouter();
+
+  // UID do Super Admin (Sabio dos 6 Caninos)
+  const superAdminUID = "kJ4iOKdHmbgr4mWms34rp24w9413";
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
@@ -49,19 +52,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (docSnap.exists()) {
           setUserData({ id: docSnap.id, ...docSnap.data() } as UserData);
         } else {
-          // Se o usuário existe no Auth mas não no banco (ex: criado manualmente), cria um perfil básico
-          // Isso evita travar o sistema
+          // Lógica de Contingência: Se o usuário existe no Auth mas não no Firestore
+          // (Muito comum em criações manuais ou erros de rede na primeira gravação)
+          
+          const isSuperAdmin = currentUser.uid === superAdminUID;
+          
           const novoUsuario: UserData = {
             id: currentUser.uid,
-            nome: currentUser.displayName || "Usuário",
+            nome: currentUser.displayName || (isSuperAdmin ? "Rodrigo Borges" : "Usuário"),
             email: currentUser.email || "",
-            role: "operador" // Padrão seguro
+            role: isSuperAdmin ? "admin" : "operador" 
           };
           
-          // Opcional: Salvar no banco para a próxima vez
-          // await setDoc(docRef, novoUsuario);
-          
-          setUserData(novoUsuario);
+          // Gravação automática para garantir que o perfil manual seja persistido
+          try {
+            await setDoc(docRef, novoUsuario, { merge: true });
+            setUserData(novoUsuario);
+          } catch (error) {
+            console.error("Erro ao criar perfil de contingência:", error);
+            // Mesmo se falhar a gravação, define no estado para não travar o acesso
+            setUserData(novoUsuario);
+          }
         }
       } else {
         setUserData(null);
@@ -72,15 +83,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => unsubscribe();
   }, []);
 
-  // Função de Logout
+  // Função de Logout completa com redirecionamento
   const logout = async () => {
     try {
       await signOut(auth);
       setUser(null);
       setUserData(null);
-      router.push("/login"); // Redireciona para login após sair
+      router.push("/login");
     } catch (error) {
-      console.error("Erro ao sair:", error);
+      console.error("Erro ao realizar logout:", error);
     }
   };
 
@@ -91,5 +102,5 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-// Hook personalizado para facilitar o uso
+// Hook personalizado para facilitar o uso em qualquer componente
 export const useAuth = () => useContext(AuthContext);

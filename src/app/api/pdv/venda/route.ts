@@ -5,26 +5,34 @@ import * as admin from 'firebase-admin';
 
 export async function POST(request: Request) {
   try {
-    // 1. Segurança: Verificar Token
+    // 1. Segurança: Verificar Token e Identidade
     const authHeader = request.headers.get('Authorization');
     if (!authHeader?.startsWith('Bearer ')) {
       return NextResponse.json({ error: 'Não autorizado' }, { status: 401 });
     }
+    
     const token = authHeader.split('Bearer ')[1];
     const decodedToken = await adminAuth.verifyIdToken(token);
+    
+    // UID do Super Admin
+    const superAdminUID = "kJ4iOKdHmbgr4mWms34rp24w9413";
+    
+    // O ownerId deve vir do token para segurança, ou ser o do próprio usuário
+    const ownerIdEfetivo = decodedToken.uid;
 
     // 2. Receber dados da venda
-    const { itens, total, formaPagamento, ownerId, operadorNome } = await request.json();
+    const { itens, total, formaPagamento, operadorNome } = await request.json();
 
     if (!itens || itens.length === 0) {
       return NextResponse.json({ error: 'Carrinho vazio' }, { status: 400 });
     }
 
     // 3. Executar Transação (Estoque + Caixa + Histórico)
+    // Usamos transação para garantir que se um passo falhar, nada seja gravado
     const vendaId = await adminDb.runTransaction(async (transaction) => {
-      // A) Verificar Estoque de todos os itens
       const updates = [];
       
+      // A) Verificar Estoque de todos os itens
       for (const item of itens) {
         const produtoRef = adminDb.collection('produtos').doc(item.id);
         const produtoDoc = await transaction.get(produtoRef);
@@ -33,12 +41,17 @@ export async function POST(request: Request) {
           throw new Error(`Produto ${item.nome} não encontrado.`);
         }
 
-        const estoqueAtual = produtoDoc.data()?.estoqueAtual || 0;
+        const dadosProduto = produtoDoc.data();
+        const estoqueAtual = dadosProduto?.estoqueAtual || 0;
+
         if (estoqueAtual < item.qtde) {
           throw new Error(`Estoque insuficiente para ${item.nome}. Restam apenas ${estoqueAtual}.`);
         }
 
-        updates.push({ ref: produtoRef, novoEstoque: estoqueAtual - item.qtde });
+        updates.push({ 
+          ref: produtoRef, 
+          novoEstoque: estoqueAtual - item.qtde 
+        });
       }
 
       // B) Criar registro da Venda (Histórico)
@@ -49,7 +62,8 @@ export async function POST(request: Request) {
         total,
         formaPagamento,
         operadorNome,
-        ownerId, // Para filtrar por dono depois
+        operadorId: decodedToken.uid,
+        ownerId: ownerIdEfetivo, // Isolamento de dados garantido pelo servidor
         tipo: "balcao"
       });
 
@@ -62,22 +76,32 @@ export async function POST(request: Request) {
         valor: total,
         formaPagamento,
         categoria: 'Venda de Peças',
-        ownerId,
+        ownerId: ownerIdEfetivo,
         referenciaId: vendaRef.id
       });
 
-      // D) Atualizar Estoques
+      // D) Aplicar atualização de Estoque
       for (const update of updates) {
-        transaction.update(update.ref, { estoqueAtual: update.novoEstoque });
+        transaction.update(update.ref, { 
+          estoqueAtual: update.novoEstoque,
+          lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+        });
       }
 
       return vendaRef.id;
     });
 
-    return NextResponse.json({ success: true, vendaId });
+    return NextResponse.json({ 
+      success: true, 
+      vendaId,
+      message: "Venda processada e estoque atualizado com sucesso." 
+    });
 
   } catch (error: any) {
-    console.error("Erro no PDV:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Erro crítico no PDV:", error);
+    return NextResponse.json(
+      { error: error.message || 'Erro interno no servidor' }, 
+      { status: 500 }
+    );
   }
 }
